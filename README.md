@@ -12,7 +12,6 @@ CNVExpression is an R/Bioconductor package for integrating Copy Number Variation
 ### Key Features
 
 - Complete pipeline for CNV-expression integration analysis
-- Support for TCGA and Xena data formats
 - Integration with CNVRanger for population-level CNV analysis
 - Multiple correlation methods (Spearman, Pearson, Kendall)
 - Comprehensive gene annotation (Ensembl, Entrez, gene symbols)
@@ -40,8 +39,8 @@ devtools::install_github("brunorsci/CNVExpression")
 library(CNVExpression)
 
 # Load data
-cnv_data <- load_cnv_data("TCGA-LAML.masked_cnv_DNAcopy.tsv.gz")
-expr_data <- load_expression_data("TCGA-LAML.star_counts.tsv.gz")
+cnv_data <- load_cnv_data("CNV_DNAcopy.tsv.gz")
+expr_data <- load_expression_data("RNASeq.star_counts.tsv.gz")
 
 # Run complete pipeline
 results <- cnv_expression_pipeline(
@@ -65,7 +64,7 @@ significant_genes <- results$results_filtered
 
 ```r
 # Load CNV data
-cnv_raw <- load_cnv_data("TCGA-LAML.masked_cnv_DNAcopy.tsv.gz")
+cnv_raw <- load_cnv_data("CNVDNAcopy.tsv.gz")
 
 # Preprocess: convert segment mean to copy number, filter diploid, remove sex chromosomes
 cnv_processed <- prepare_cnv_data(cnv_raw)
@@ -85,7 +84,7 @@ cnvrs <- calculate_population_ranges(cnv_grl)
 
 ```r
 # Load and prepare expression data
-counts <- load_expression_data("TCGA-LAML.star_counts.tsv.gz")
+counts <- load_expression_data("RNASEQ_cnv_all_star_counts.tsv.gz")
 genes_gr <- create_gene_granges(rownames(counts))
 rse <- create_expression_se(counts, genes_gr)
 ```
@@ -127,7 +126,6 @@ plot_cnv_by_chromosome(cnv_processed)
 
 ### CNV Data
 - Tab-delimited file with columns: sample, chromosome, start, end, segment_mean
-- Supported formats: TCGA DNACopy, Xena CNV files
 
 ### Expression Data
 - Tab-delimited file with genes as rows, samples as columns

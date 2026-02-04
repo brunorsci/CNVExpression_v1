@@ -1,0 +1,16 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^README\.Rmd$
+^\.github$
+^codecov\.yml$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^\.lintr$
+^\.travis\.yml$
+^results_xena_raw$
+^results_analysis$
+^data$
+^inst/legacy_tutorials$
+^inst/legacy_scripts$
+^SCIENTIFIC_RESULTS\.md$

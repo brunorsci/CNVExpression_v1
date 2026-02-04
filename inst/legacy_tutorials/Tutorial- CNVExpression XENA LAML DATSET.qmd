@@ -1,0 +1,272 @@
+---
+title: "CNVEXPRESSION XENA LAML DATASET"
+author: "Assuncao BR"
+format: pdf
+editor: visual
+---
+
+## 
+
+## DATA SETS
+
+**Download links**
+
+[DNACopy (Copy Number Variations](https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-LAML.masked_cnv_DNAcopy.tsv.gz "DNACopy (Copy Number Variations")
+
+[RNASeq FPKM](https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-LAML.star_fpkm.tsv.gz "RNASeq FPKM")
+
+[RNASeq STAR-Count](https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-LAML.star_counts.tsv.gz "RNASeq STAR-Count")
+
+[Survival Data](https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-LAML.survival.tsv.gz "Survival Data")
+
+[Clinical](https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-LAML.clinical.tsv.gz "Clinical")
+
+Carregar os dados
+
+```{r cars}
+cnvs <- read.delim("~/hd3/CNeEXP/xena_laml_data/TCGA-LAML.masked_cnv_DNAcopy.tsv.gz")
+
+counts <- read.delim("~/hd3/CNeEXP/xena_laml_data/TCGA-LAML.star_counts.tsv.gz")
+```
+
+## Data manipulation
+
+Bibliotecas
+
+```{r}
+library(stringr) 
+library(dplyr) 
+library(GenomeInfoDb) 
+library(CNVRanger)  
+```
+
+```{r pressure, echo=FALSE}
+
+### CNVS # Substituir hífens por underscores 
+cnvs$sample <- str_replace_all(cnvs[["sample"]], "-", "_") 
+
+# Transformar segmentos para numeros de copias inteiros 
+cnvs <-convert_segment_mean_to_cn(df=cnvs, col = "value") 
+
+# Adicionando a coluna state (Necessária para o CNVRanger) 
+cnvs$state        <- ifelse(cnvs$copy_number >= 4, 4, cnvs$copy_number)  
+cnvs              <-  cnvs %>%   filter(!(copy_number == 2 | Chrom %in% c("X", "Y")))  
+
+### COUNTS 
+colnames(counts)  <- gsub(x = colnames(counts),pattern = "\\.", replacement = "_")
+rownames(counts)  <-counts$Ensembl_ID 
+counts            <- counts[!grepl("PAR_Y", rownames(counts)), ] 
+rownames(counts)  <-gsub("\\..*", "", rownames(counts)) 
+counts            <- counts %>% dplyr::select(-Ensembl_ID) 
+```
+
+```{r}
+library(dplyr)  
+
+# Resumo descritivo 
+resumo_cnv <- cnvs %>%   group_by(copy_number, annotation) %>%   
+  summarise(     total_cnv = n(),     
+                 media_tamanho = mean(End - Start, na.rm = TRUE),     
+                 min_tamanho = min(End - Start, na.rm = TRUE),     
+                 max_tamanho = max(End - Start, na.rm = TRUE)   )  
+# Exibindo o resumo 
+print(resumo_cnv)
+```
+
+CNVS ABERRANTES CN\>=4
+
+```{r}
+nrow(cnvs%>%   filter(copy_number >= 4))
+```
+
+DUPLICACOES
+
+```{r}
+nrow(cnvs_filtered %>%   filter(copy_number >= 3))
+```
+
+CNVS POR AMOSTRA
+
+```{r}
+# Contando o número de CNVs por amostra
+cnvs_por_amostra <- cnvs %>%
+  group_by(sample) %>%
+  summarise(
+    total_cnv = n(),  # Número total de CNVs por amostra
+    duplicacao = sum(annotation == "duplicação"),  # Contando duplicações
+    delecao_parcial = sum(annotation == "deleção parcial"),  # Contando deleções parciais
+    delecao_total = sum(annotation == "deleção total")  # Contando deleções totais
+  )
+#export
+write.table(x = resumo_cnv, "resumo_cnv.tsv", row.names = F, sep = "/t")
+write.table(x = cnvs, "cnv.tsv", row.names = F, sep = "/t")
+
+# Exibindo o resumo
+print(cnvs_por_amostra)
+```
+
+TIPOS DE CNVS
+
+```{r}
+#| label: CNV type plot simple
+#| echo: false
+library(ggplot2)  
+# Gráfico de barras para tipos de CNV 
+
+ggplot(cnvs, aes(x = annotation)) +   
+  geom_bar(fill = "steelblue") +   
+  labs(title = "", x = "Type", y = "Frequency") +   
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+CNVS POR CROMOSSOMOS
+
+ORDERNAR OS CROMOSSOMOS: O PLOT FICOU FEIO
+
+```{r}
+library(ggplot2)
+
+ggplot(cnvs, aes(x = Chrom, fill = annotation)) +
+  geom_bar() +
+  scale_fill_manual(values = c("deleção parcial" = "pink", 
+                                "deleção total" = "red", 
+                                "duplicação" = "steelblue")) +
+  labs(title = "", 
+       x = "Chromossome", 
+       y = "Frequency", 
+       fill = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Converter para granges experiment
+
+```{r}
+cnvs_grl <-cnvs %>%   
+  GenomicRanges::makeGRangesListFromDataFrame(split.field="sample", 
+                                              keep.extra.columns=TRUE)  
+seqlevelsStyle(cnvs_grl) <- "UCSC"     
+#ordenar 
+cnvs_grl <- GenomicRanges::sort(cnvs_grl) 
+```
+
+SUMARIZAR CNV CALL
+
+```{r}
+library(CNVRanger) 
+#cnvrs <- populationRanges(cnvs_grl) 
+cnvr_populationranges <- populationRanges(cnvs_grl) 
+
+```
+
+GENES GRANGES
+
+```{r}
+library(GenomicFeatures) 
+library(biomaRt) 
+# Conectar ao Ensembl para obter informações genômicas 
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")  
+# Obter dados dos genes (removendo versões dos IDs do Ensembl) 
+gene_info <- getBM(attributes = c("ensembl_gene_id", "chromosome_name", 
+                                  "start_position", "end_position", "strand"),   
+                   filters = "ensembl_gene_id",   
+                   values = gsub("\\..*", "", rownames(counts)),   mart = ensembl )  
+# Criar um objeto GRanges com as coordenadas dos genes 
+genes_gr <- GRanges(   seqnames = paste0("chr", gene_info$chromosome_name),   
+                       ranges = IRanges(start = gene_info$start_position, 
+                                        end = gene_info$end_position),   
+                       strand = "*",   gene_id = gene_info$ensembl_gene_id )  
+
+# Atribuir nomes baseados no gene_id 
+names(genes_gr) <- genes_gr$gene_id  
+
+# salvar os genes que nao foram anotados no grange object 
+genes_faltantes <- setdiff(rownames(counts), names(genes_gr))  
+# Filtrar genes que estão presentes em counts 
+genes_comuns <- intersect(rownames(counts), names(genes_gr)) 
+counts <- counts[genes_comuns, , drop = FALSE] 
+genes_gr <- genes_gr[genes_comuns]   
+```
+
+**CRIAR SUMMARIZED EXPERIMENT**
+
+```{r}
+
+library(SummarizedExperiment)  
+# Criar o objeto SummarizedExperiment 
+rse <- SummarizedExperiment(assays = list(counts = counts), rowRanges = genes_gr)  # Exibir o resultado rse
+```
+
+CNV INTEGRATION WITH RNASeq
+
+```{r}
+res_populationRanges <- cnvEQTL(cnvr_populationranges, cnvs_grl, rse, 
+               window = "1Mbp", 
+               verbose = TRUE,
+               min.samples = 1,
+               min.state.freq = 1,
+               filter.by.expr = FALSE) 
+# data frame 
+#res_df=as.data.frame(res)
+```
+
+CNV EXPRESSION POR CROMOSSOMO
+
+```{r}
+library(dplyr)
+library(GenomicRanges)
+
+chr1_grl <- cnvs %>% 
+  filter(Chrom == 1) %>% 
+  GenomicRanges::makeGRangesListFromDataFrame(split.field = "sample", 
+                                              keep.extra.columns = TRUE) %>% 
+  GenomicRanges::sort() 
+
+# Corrigir a atribuição do seqlevelsStyle
+seqlevelsStyle(chr1_grl) <- "UCSC"  
+
+#chr1_cnvrs <- populationRanges(chr1_grl) 
+
+chr1_res_ro <- cnvEQTL(chr1_cnvrs_ro , chr1_grl, rse, 
+                    window = "1Mbp", 
+                    verbose = TRUE,
+                    min.samples = 1,
+                    min.state.freq = 1,
+                    filter.by.expr = FALSE) 
+
+# data frame 
+chr1_res_ro_df <- as.data.frame(chr1_res_ro) 
+```
+
+```         
+library(dplyr)
+library(tidyr)
+
+# Definir cutoffs
+logFC_cutoff <- 1
+pvalue_cutoff <- 0.05
+
+# Filtrar o dataframe
+CNVExpression <- res_populationRanges_df %>%
+  filter(
+    AdjPValue <= pvalue_cutoff &  # Filtro para FDR
+    (logFC.CN0 >= logFC_cutoff | logFC.CN0 <= -logFC_cutoff |
+     logFC.CN1 >= logFC_cutoff | logFC.CN1 <= -logFC_cutoff |
+     logFC.CN3 >= logFC_cutoff | logFC.CN3 <= -logFC_cutoff |
+     logFC.CN4 >= logFC_cutoff | logFC.CN4 <= -logFC_cutoff) &
+    !(cnvs.copy_number == 2 | cnvs.annotation == "neutral")  
+  ) %>%
+  filter(!(cnvs.seqnames %in% c("chrX", "chrY"))) %>%
+  separate(group_name, into = c("gene_seqnames", "positions"), 
+           sep = ":", remove = FALSE) %>%
+  separate(positions, into = c("gene_start", "gene_end"), sep = "-") %>%
+  dplyr::select(-group_name)
+  
+   
+```
+
+```{r}
+CNVExpression <- process_CNVExpression(CNVExp = res_df, cnvs_tb = cnvs, cnvs_chrom = "Chrom",
+                                cnvs_start = "Start", cnvs_end = "End", 
+                                cnvs_samples = "sample")
+```

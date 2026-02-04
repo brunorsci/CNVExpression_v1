@@ -1,0 +1,398 @@
+---
+title: "CNVEXp Integration"
+author: "Assuncao BR"
+format: html
+editor: visual
+---
+
+## CNV Integration with RNASeq
+
+Bibliotecas
+
+```{r}
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(SummarizedExperiment)
+library(GenomicRanges)
+library(biomaRt)
+library(CNVRanger)
+library(GenomicFeatures)
+
+```
+
+#### 1- Input dos arquivos de cnvs e expressão de RNA (RNASeq).
+
+Diretorio de trabalho
+
+```{r}
+setwd("~/hd3/CNeEXP/")
+```
+
+```{r}
+cnvs <- read.delim("~/hd3/CNeEXP/tcga_lma_us/copy_number_somatic_mutation.LAML-US.tsv")
+
+exp_seq <- read.delim("~/hd3/CNeEXP/tcga_lma_us/exp_seq.LAML-US.tsv", stringsAsFactors = F)
+```
+
+Copy Number Variations
+
+```{r}
+
+cnvs <- cnvs %>%
+  select(samples=submitted_sample_id, 
+         seqnames=chromosome,
+         start=chromosome_start,
+         end=chromosome_end,
+         segment_mean=segment_mean)
+
+# Substituir hífens por underscores
+cnvs$samples <- str_replace_all(cnvs[["samples"]], "-", "_")
+
+# Função para modificar o identificador TCGA
+mudar_identificador_tcga <- function(x, sep) {
+  sapply(x, function(i) {
+    partes <- unlist(strsplit(i, sep))
+    paste(partes[1:4], collapse = sep)
+  })
+}
+
+# Aplicando a função
+cnvs$samples <- mudar_identificador_tcga(cnvs$samples, "_")
+cnvs$samples <- gsub("3A", "3", x = cnvs$samples) 
+cnvs$samples <- gsub("11A", "11", x = cnvs$samples)
+
+
+# Transformar segments mean em numeros de copias inteiros
+cnvs <-convert_segment_mean_to_cn(df=cnvs)
+
+# Criando a coluna state com valores de numeros de copias 0-4
+cnvs$state <- ifelse(cnvs$copy_number >= 4, 4, cnvs$copy_number)
+
+cnvs_grl <-cnvs %>%
+  dplyr::select(samples, seqnames, start, end, state) %>%
+  GenomicRanges::makeGRangesListFromDataFrame(split.field="samples", keep.extra.columns=TRUE)
+
+seqlevelsStyle(cnvs_grl) <- "UCSC"  
+
+
+#ordenar
+cnvs_grl <- GenomicRanges::sort(cnvs_grl)
+
+
+```
+
+SUMARIZAR CNV CALL
+
+-   na população
+-   sobreposicao reciproca
+-   aberrantes
+
+```{r}
+# Trimmar cnvs com baixa densidade de chamadas
+# considerando uma densidade de chamadas de 10%
+cnvrs <- populationRanges(cnvs_grl)
+
+# Sobreposição reciproca: cnvs que sobrepõem em ao menos 51%
+ro.cnvrs <- populationRanges(cnvs_grl[1:10], mode="RO", ro.thresh=0.51,verbose=T)
+
+# Recorrente cnvs
+# cnvs anormais que acontecem de maneira maior do que o esperado (aberrantes)
+rrcnvrs <- populationRanges(cnvs_grl, density=0.1, est.recur=TRUE)
+rrcnvrs <-subset(rrcnvrs, pvalue < 0.05) # filtrar pelos valores de p
+
+```
+
+ANOTACAO (CNV)
+
+```{r}
+#| message: false
+library(GenomeInfoDb)
+
+cnvs_ann_result <- cnv_annotate_genes(input = cnvs, ref_genome = "hg19", organism = "hsapiens_gene_ensembl")
+```
+
+RNASEQ
+
+Tratamento dos dados: modificar do formato longo para o formato largo onde cada gene é uma linha e amostra é uma coluna
+
+```{r}
+#| label: RNASEQ Import
+#| include: false
+
+exp_seq<-exp_seq %>%
+  select(samples=submitted_sample_id, genes=gene_id, counts=raw_read_count)
+
+# Substituir hífens por underscores
+exp_seq$samples <- str_replace_all(exp_seq[["samples"]], "-", "_")
+
+# Aplicando a função
+exp_seq$samples <- mudar_identificador_tcga(exp_seq$samples, "_")
+exp_seq$samples <- gsub("3B", "3", x = exp_seq$samples) 
+exp_seq$samples <- gsub("3A", "3", x = exp_seq$samples) 
+
+exp_seq$samples <- gsub("11A", "11", x = exp_seq$samples) ## 11 se refere a normal
+
+
+# Formato largo
+exp_seq <- exp_seq %>%
+    mutate(counts = as.numeric(counts)) %>% # transforma counts em numeric
+    pivot_wider(
+        names_from = samples, 
+        values_from = counts,
+        values_fn = sum  # Soma valores duplicados
+    ) %>%
+    as.data.frame()
+
+
+rownames(exp_seq) <- exp_seq$genes
+exp_seq<- exp_seq %>% select(-genes)
+
+```
+
+Criar genes granges
+
+```{r}
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+
+# Lista de genes de interesse baseada nos rownames da tabela de expressão
+genes_de_interesse <- rownames(exp_seq)
+
+# Obter IDs Entrez dos genes
+entrez_ids <- mapIds(org.Hs.eg.db, keys = genes_de_interesse, 
+                     column = "ENTREZID", keytype = "SYMBOL", multiVals = "first")
+
+# Remover genes sem ID Entrez
+entrez_ids <- entrez_ids[!is.na(entrez_ids)]
+
+# Obter coordenadas dos genes
+genes_gr <- genes(TxDb.Hsapiens.UCSC.hg19.knownGene, columns = c("gene_id"))
+
+# Criar um mapeamento reverso de Entrez para símbolos
+gene_symbols <- mapIds(org.Hs.eg.db, keys = as.character(mcols(genes_gr)$gene_id), 
+                       column = "SYMBOL", keytype = "ENTREZID", multiVals = "first")
+
+# Adicionar os símbolos dos genes
+mcols(genes_gr)$symbol <- gene_symbols
+
+# Filtrar apenas os genes de interesse
+genes_filtrados <- genes_gr[mcols(genes_gr)$symbol %in% genes_de_interesse]
+
+# Ajustar nomes das linhas para ficarem no formato desejado
+names(genes_filtrados) <- genes_de_interesse[match(mcols(genes_filtrados)$symbol, genes_de_interesse)]
+
+# Remover metadados desnecessários
+mcols(genes_filtrados) <- NULL
+
+# Exibir o resultado
+genes_filtrados
+
+##rm(genes_de_interesse, genes_gr, gene_symbols, entrez_ids)
+
+## TESTAR
+all(rownames(exp_seq) %in% names(genes_filtrados))
+all(names(genes_filtrados) %in% rownames(exp_seq))
+
+# Se algum acima retornar false, execute:
+
+genes_filtrados <- genes_filtrados[match(rownames(exp_seq), names(genes_filtrados))]
+
+
+```
+
+Manter apenas genes comuns
+
+```{r}
+genes_comuns <- intersect(rownames(exp_seq), names(genes_filtrados))
+exp_seq <- exp_seq[genes_comuns, , drop=FALSE]
+genes_filtrados <- genes_filtrados[genes_comuns]
+
+
+```
+
+Criar rse (SummarizedExperiment)
+
+```{r}
+rse <- SummarizedExperiment(assays=list(counts=exp_seq), rowRanges=genes_filtrados)
+```
+
+CNV INTEGRATION WITH RNASeq
+
+```{r}
+res <- cnvEQTL(cnvrs, cnvs_grl, rse, 
+               window = "1Mbp", 
+               verbose = TRUE, 
+               min.samples = 1, 
+               min.state.freq = 1, 
+               filter.by.expr = FALSE)
+# data frame
+res_df=as.data.frame(res)
+```
+
+SUBSET
+
+```{r}
+res_populationRanges_df$seqnames <- as.character(res_populationRanges_df$seqnames)
+CNVExpressionraw <- process_CNVExpression(res_populationRanges_df, 
+                                        cnvs, 
+                                        cnvs_samples = "sample", 
+                                        cnvs_chrom = "chrom",
+                                        exp_logFC = c("logFC.CN1", "logFC.CN3"))
+
+CNVExpressionraw <- as_tibble(CNVExpressionraw) %>% 
+  dplyr::select(subset_cnvs.sample, subset_cnvs.seqnames, subset_cnvs.start, subset_cnvs.end, subset_cnvs.width, subset_cnvs.strand,  
+         subset_cnvs.copy_number, subset_cnvs.annotation, 
+         gene_seqnames=gr_expression.seqnames,
+         gene_start=gr_expression.start, 
+         gene_end=gr_expression.end, 
+         group_name, logFC.CN1, logFC.CN3, 
+         PValue, AdjPValue) %>%  
+  rename_with(~ gsub("^subset_", "", .x)) %>%  
+  #rename_with(~ gsub("^gr_expression.", "", .x)) %>%  
+  rename_with(~ gsub("^mcols.", "", .x)) %>% 
+  as_tibble()
+
+CNVExpressionraw <-  CNVExpressionraw %>%
+  filter(!(cnvs.copy_number == 2 | cnvs.seqnames %in% c("chrX", "chrY")))
+
+```
+
+```{r}
+library(dplyr)
+
+# Definir cutoffs
+logFC_cutoff <- 1
+pvalue_cutoff <- 0.05
+
+# Filtrar o dataframe
+CNVExpression <- CNVExpressionraw %>%
+  filter(
+    AdjPValue <= pvalue_cutoff &  # Filtro para FDR
+    (
+     logFC.CN1 >= logFC_cutoff | logFC.CN1 <= -logFC_cutoff |
+     logFC.CN3 >= logFC_cutoff | logFC.CN3 <= -logFC_cutoff
+     ) &
+    !(cnvs.copy_number == 2 | cnvs.annotation == "neutral")  
+  ) %>%
+  filter(!(cnvs.seqnames %in% c("chrX", "chrY"))) %>%
+  separate(group_name, into = c("gene_seqnames", "positions"), 
+           sep = ":", remove = FALSE) %>%
+  separate(positions, into = c("gene_start", "gene_end"), sep = "-") %>%
+  dplyr::select(-group_name)
+
+```
+
+```{r}
+# Carregar pacotes necessários
+library(dplyr)
+library(tidyverse)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+
+library(org.Hs.eg.db)
+
+# Criar objeto TxDb para hg19 ou hg38
+#txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
+# Criar objeto GRanges com as posições dos genes na tabela df
+gr_query <- GRanges(
+  seqnames = CNVExpression$gene_seqnames,
+  ranges = IRanges(start = as.numeric(CNVExpression$gene_start), end = as.numeric(CNVExpression$gene_end))
+)
+
+# Obter anotações de genes
+#genes_hg38 <- genes(txdb)
+genes_hg19 <- genes(txdb)
+
+
+# Encontrar sobreposições entre os genes da referência e as posições na tabela
+#hits <- findOverlaps(gr_query, genes_hg38)
+hits <- findOverlaps(gr_query, genes_hg19)
+
+
+# Associar os IDs dos genes às linhas da tabela
+CNVExpression$entrez_id <- NA
+CNVExpression$entrez_id[queryHits(hits)] <- subjectHits(hits)
+
+# Mapear os IDs para nomes de genes
+CNVExpression$gene_name <- mapIds(org.Hs.eg.db, keys = as.character(CNVExpression$entrez_id),
+                       column = "SYMBOL", keytype = "ENTREZID", multiVals = "first")
+
+# Mapear ensemdl_ids
+get_ensembl_ids <- function(chrom, start, end) {
+  ensembl <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", GRCh = 37)
+  result <- getBM(
+    attributes = c("hgnc_symbol", "ensembl_gene_id", "chromosome_name", "start_position", "end_position"),
+    filters = c("chromosome_name", "start", "end"),
+    values = list(chrom, start, end),
+    mart = ensembl
+  )
+  return(result$ensembl_gene_id)
+}
+
+# Aplicar a função para obter Ensembl IDs e adicionar à tabela
+CNVExpression$ensembl_id <- mapply(get_ensembl_ids,
+                                            CNVExpression$gene_seqnames,
+                                            CNVExpression$gene_start,
+                                            CNVExpression$gene_end)
+
+# gene_names list fix
+CNVExpression <- CNVExpression %>%
+  mutate(gene_name = sapply(gene_name, toString))
+
+
+
+CNVExpression_clean <- CNVExpression_filtered %>%
+  filter(!is.na(gene_id))
+CNVExpression_clean2 <- CNVExpression_filtered %>%
+  filter(!is.na(gene_name))
+
+# converter lista para vetor
+CNVExpression$gene_name <- sapply(CNVExpression$gene_name, function(x) paste(x, collapse = ";"))
+
+
+
+
+
+# Resultado
+print(CNVExpression_filtered)
+
+```
+
+EXPORTAR
+
+```{r}
+# Definir o diretório de saída
+output_dir <- "~/hd3/CNeEXP/xena_laml_data"
+
+# Exportar cada tabela
+write.table(CNVExpression, file = file.path(output_dir, "CNVExpression_filtered.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.table(cnvs, file = file.path(output_dir, "cnvs.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.table(cnvrs, file = file.path(output_dir, "cnvrs.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.table(counts, file = file.path(output_dir, "counts.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.table(genes_gr, file = file.path(output_dir, "genes_gr.tsv"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+```
+
+TESTE DE ASSOCIACAO
+
+```{r}
+doador <- doador %>%
+  dplyr::select(submitted_donor_id, donor_sex, donor_vital_status, 
+                donor_age_at_diagnosis, donor_survival_time)
+```
+
+```         
+```

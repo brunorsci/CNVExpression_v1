@@ -1,0 +1,231 @@
+---
+title: "CNV-DASHBOARD"
+author: "Assuncao BR (2025)"
+format: pdf
+editor: visual
+---
+
+## CNVs DASHBOARD
+
+Filtrar CNVs diploides
+
+```{r}
+library(dplyr)
+
+knitr::opts_chunk$set(
+  envir = globalenv()  # Isso vai forçar o uso do ambiente global
+)
+
+# remover diploides e cromossomos sexuais.
+cnvs <- cnvs %>%
+  filter(!(copy_number == 2 | seqnames %in% c("chrX", "chrY")))
+
+
+```
+
+Resumo cnvs
+
+```{r}
+library(dplyr)
+
+# Resumo descritivo
+resumo_cnv <- cnvs %>%
+  group_by(copy_number, annotation) %>%
+  summarise(
+    total_cnv = n(),
+    media_tamanho = mean(end - start, na.rm = TRUE),
+    min_tamanho = min(end - start, na.rm = TRUE),
+    max_tamanho = max(end - start, na.rm = TRUE)
+  )
+
+# Exibindo o resumo
+print(resumo_cnv)
+
+```
+
+```         
+```
+
+```{r}
+# Contando o número de CNVs por amostra
+cnvs_por_amostra <- cnvs %>%
+  group_by(sample) %>%
+  summarise(
+    total_cnv = n(),  # Número total de CNVs por amostra
+    duplicacao = sum(annotation == "duplicação"),  # Contando duplicações
+    delecao_parcial = sum(annotation == "deleção parcial"),  # Contando deleções parciais
+    delecao_total = sum(annotation == "deleção total")  # Contando deleções totais
+  )
+
+# Exibindo o resumo
+print(cnvs_por_amostra)
+
+
+```
+
+CNVS aberrantes
+
+```{r}
+nrow(cnvs %>%
+  filter(copy_number >= 4))
+
+```
+
+DUPLICACOES
+
+```{r}
+nrow(cnvs %>%
+  filter(copy_number >= 3))
+```
+
+```{r}
+library(ggplot2)
+
+# Gráfico de barras para tipos de CNV
+ggplot(cnvs, aes(x = annotation)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "", x = "Type", y = "Frequency") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# Boxplot para o tamanho dos CNVs por tipo
+ggplot(cnvs, aes(x = annotation, y = end - start)) +
+  geom_boxplot(fill = "lightblue", color = "steelblue") +
+  labs(title = "", x = "Type", y = "length (bp)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+DISTRIBUIÇÃO de CNVs por Cromossomo
+
+```{r}
+# Gráfico de barras para CNVs por cromossomo
+ggplot(cnvs, aes(x = Chrom)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "", x = "Chromossome", y = "Frequency") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+GRAFICO DE DISTRIBUIÇÃO DOS TIPOS DE CNVS POR CROMOSSOMOS
+
+```{r}
+library(ggplot2)
+
+ggplot(cnvs, aes(x = chrom, fill = annotation)) +
+  geom_bar() +
+  scale_fill_manual(values = c("deleção parcial" = "pink", 
+                                "deleção total" = "red", 
+                                "duplicação" = "steelblue")) +
+  labs(title = "", 
+       x = "Chromossome", 
+       y = "Frequency", 
+       fill = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+library(shiny)
+library(ggplot2)
+
+ui <- fluidPage(
+  titlePanel("Análise de CNVs"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("cnv_type", "Escolha o Tipo de CNV", choices = unique(cnvs$annotation))
+    ),
+    mainPanel(
+      plotOutput("cnv_plot"),
+      tableOutput("cnv_summary")
+    )
+  )
+)
+
+server <- function(input, output) {
+  
+  output$cnv_plot <- renderPlot({
+    ggplot(cnvs %>% filter(annotation == input$cnv_type), aes(x = seqnames)) +
+      geom_bar(fill = "darkorange") +
+      labs(title = paste("CNVs por Cromossomo - Tipo", input$cnv_type), x = "Cromossomo", y = "Frequência") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  })
+  
+  output$cnv_summary <- renderTable({
+    resumo_cnv %>% filter(annotation == input$cnv_type)
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+ 
+```
+
+**RESUMO CNV EXPRESSION**
+
+```{r}
+library(dplyr)
+
+# Resumo do número de CNVs por tipo de cópia e amostra
+resumo_cnv_expression <- CNVExpression_filtered %>%
+  group_by(cnvs.annotation, cnvs.samples) %>%
+  summarise(
+    total_cnv = n()
+  )
+
+# Exibindo o resumo
+print(resumo_cnv_expression)
+
+```
+
+```{r}
+# Estatísticas de expressão gênica
+estatisticas_expressao <- CNVExpression %>%
+  group_by(cnvs.annotation) %>%
+  summarise(
+    media_logFC_C1 = mean(logFC.CN1, na.rm = TRUE),
+    media_logFC_C3 = mean(logFC.CN3, na.rm = TRUE),
+    media_PValue = mean(PValue, na.rm = TRUE),
+    media_AdjPValue = mean(AdjPValue, na.rm = TRUE)
+  )
+
+# Exibindo as estatísticas
+print(estatisticas_expressao)
+
+```
+
+```{r}
+# Gráfico de barras para os tipos de CNV
+ggplot(CNVExpression, aes(x = cnvs.annotation)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# Boxplot para os PValues por tipo de CNV
+ggplot(CNVExpression, aes(x = cnvs.annotation, y = PValue)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(title = "Distribuição de PValue por Tipo de CNV", x = "Tipo de CNV", y = "P-Value") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+EXPORTACAO
+
+```{r}
+write.table(resumo_cnv, 
+            "~/hd3/CNeEXP/xena_laml_data/resumo_cnv.tsv", 
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.table(cnvs_por_amostra, 
+            "~/hd3/CNeEXP/xena_laml_data/cnvs_por_amostra.tsv", 
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+
+
+```

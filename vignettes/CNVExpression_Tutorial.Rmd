@@ -1,0 +1,394 @@
+---
+title: "CNVExpression: Integrating Copy Number Variations with Gene Expression"
+author:
+  - name: Bruno Rodrigo Assuncao
+date: "`r Sys.Date()`"
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{CNVExpression Tutorial}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache = FALSE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+# Introduction
+
+**CNVExpression** is an R/Bioconductor package for integrating Copy Number
+Variation (CNV) data with gene expression (RNA-seq) data. The package enables
+identification of genes whose expression levels are significantly affected by
+copy number alterations, which is particularly relevant in cancer genomics
+studies.
+
+## Key Features
+
+- Complete pipeline for CNV-expression integration analysis
+- Support for TCGA and Xena data formats
+- Integration with CNVRanger for population-level CNV analysis
+- Multiple correlation methods (Spearman, Pearson, Kendall)
+- Comprehensive gene annotation (Ensembl, Entrez, gene symbols)
+- Publication-ready visualizations
+
+## Biological Background
+
+Copy Number Variations (CNVs) are structural variations involving the gain or
+loss of DNA segments. In cancer, CNVs can affect gene expression through
+dosage effects: gene amplification often leads to increased expression, while
+deletions may reduce or eliminate gene expression. Identifying genes where
+CNV status correlates with expression changes can reveal:
+
+- Oncogenes activated by amplification
+- Tumor suppressors inactivated by deletion
+- Potential therapeutic targets
+- Biomarkers for diagnosis and prognosis
+
+# Installation
+
+```{r install, eval=FALSE}
+# From Bioconductor (when available)
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("CNVExpression")
+
+# From GitHub (development version)
+devtools::install_github("brunorsci/CNVExpression")
+```
+
+# Quick Start
+
+## Load the Package
+
+```{r load-package, eval=FALSE}
+library(CNVExpression)
+library(GenomicRanges)
+library(SummarizedExperiment)
+library(dplyr)
+```
+
+## Complete Analysis Pipeline
+
+For a quick analysis, you can use the `cnv_expression_pipeline()` function:
+```{r pipeline-example, eval=FALSE}
+# Run complete pipeline
+results <- cnv_expression_pipeline(
+    cnv_data = cnv_raw,
+    expression_data = expr_counts,
+    genome = "GRCh38",
+    logfc_cutoff = 1,
+    pvalue_cutoff = 0.05
+)
+
+# View summary
+print_summary(results)
+
+# Access filtered results
+head(results$results_filtered)
+```
+
+# Detailed Workflow
+
+This section walks through each step of the analysis pipeline using
+TCGA Acute Myeloid Leukemia (LAML) data from the Xena database.
+
+## Step 1: Load Data
+
+This tutorial uses example data included with the package. The data format
+mirrors TCGA/Xena datasets but uses simulated values for demonstration.
+
+### CNV Data
+
+CNV data from TCGA is typically in DNACopy format with segment mean values.
+
+```{r load-cnv}
+# Load example CNV data (included with package)
+cnv_file <- system.file("extdata", "example_cnv.tsv", package = "CNVExpression")
+cnv_raw <- read.delim(cnv_file, header = TRUE, stringsAsFactors = FALSE)
+
+# View structure
+head(cnv_raw)
+dim(cnv_raw)
+```
+
+For your own analysis, you can load TCGA/Xena data:
+
+```{r load-cnv-custom, eval=FALSE}
+# Load CNV data from Xena database (example path)
+cnv_raw <- load_cnv_data("path/to/TCGA-LAML.masked_cnv_DNAcopy.tsv.gz",
+                         sample_col = "sample",
+                         chrom_col = "Chrom",
+                         start_col = "Start",
+                         end_col = "End",
+                         value_col = "value")
+```
+
+### Expression Data
+
+RNA-seq count data with genes as rows and samples as columns.
+
+```{r load-expr}
+# Load example expression data (included with package)
+expr_file <- system.file("extdata", "example_expression.tsv", package = "CNVExpression")
+counts <- read.delim(expr_file, header = TRUE, row.names = 1, stringsAsFactors = FALSE)
+
+# View structure
+dim(counts)  # genes x samples
+head(counts[, 1:5])
+```
+
+For your own analysis:
+
+```{r load-expr-custom, eval=FALSE}
+# Load expression data from Xena database
+counts <- load_expression_data("path/to/TCGA-LAML.star_counts.tsv.gz",
+                               gene_col = "Ensembl_ID",
+                               remove_par_y = TRUE,
+                               remove_version = TRUE)
+```
+
+## Step 2: Preprocess CNV Data
+
+### Convert Segment Mean to Copy Number
+
+The segment mean is converted to integer copy number using:
+$$CN = round(2 \times 2^{SM})$$
+
+```{r convert-cn, eval=FALSE}
+# Convert segment mean to copy number and add annotation
+cnv_processed <- convert_segment_mean_to_cn(cnv_raw)
+
+# View annotation distribution
+table(cnv_processed$annotation)
+```
+
+### Filter and Prepare Data
+
+```{r prepare-cnv, eval=FALSE}
+# Complete preprocessing: remove sex chromosomes, filter diploid, add state
+cnv_processed <- prepare_cnv_data(cnv_raw,
+                                   remove_diploid = TRUE,
+                                   remove_sex = TRUE)
+
+# Standardize sample IDs
+cnv_processed$sample <- standardize_sample_ids(cnv_processed$sample)
+```
+
+### Visualize CNV Distribution
+
+```{r plot-cnv, eval=FALSE}
+# CNV type distribution
+plot_cnv_types(cnv_processed)
+
+# CNV distribution by chromosome
+plot_cnv_by_chromosome(cnv_processed)
+
+# CNV length distribution
+plot_cnv_length(cnv_processed)
+```
+
+## Step 3: Create GRanges Objects
+
+### CNV GRangesList
+
+```{r create-grl, eval=FALSE}
+# Create GRangesList (one GRanges per sample)
+cnv_grl <- create_cnv_grangeslist(cnv_processed)
+
+# View structure
+cnv_grl
+length(cnv_grl)  # number of samples
+```
+
+### Population CNV Regions
+
+Identify recurrent CNV regions across the population:
+
+```{r population-ranges, eval=FALSE}
+# Calculate population-level CNV regions
+cnvrs <- calculate_population_ranges(cnv_grl,
+                                      mode = "density",
+                                      density = 0.1)
+
+length(cnvrs)  # number of CNV regions
+```
+
+## Step 4: Prepare Expression Data
+
+### Create Gene GRanges
+
+```{r gene-granges, eval=FALSE}
+# Create GRanges for genes using biomaRt
+genes_gr <- create_gene_granges(rownames(counts),
+                                id_type = "ensembl",
+                                genome = "GRCh38")
+
+length(genes_gr)
+```
+
+### Create SummarizedExperiment
+
+```{r create-se, eval=FALSE}
+# Standardize expression sample IDs
+colnames(counts) <- standardize_sample_ids(colnames(counts))
+
+# Create SummarizedExperiment
+rse <- create_expression_se(counts, genes_gr, match_genes = TRUE)
+
+rse
+```
+
+## Step 5: CNV-Expression Integration
+
+### Run cnvEQTL Analysis
+
+The core analysis uses CNVRanger's `cnvEQTL` function to test associations
+between CNV state and gene expression:
+
+```{r run-analysis, eval=FALSE}
+# Run CNV-expression analysis
+results <- run_cnv_expression_analysis(
+    cnvrs = cnvrs,
+    cnv_grl = cnv_grl,
+    rse = rse,
+    window = "1Mbp",
+    min_samples = 3,
+    min_state_freq = 3,
+    verbose = TRUE
+)
+
+dim(results)
+head(results)
+```
+
+### Filter Significant Results
+
+```{r filter-results, eval=FALSE}
+# Filter by log fold change and adjusted p-value
+filtered <- filter_cnv_expression_results(
+    results,
+    logfc_cutoff = 1,
+    pvalue_cutoff = 0.05
+)
+
+nrow(filtered)
+```
+
+### Visualize Results
+
+```{r volcano-plot, eval=FALSE}
+# Volcano plot
+plot_volcano(filtered, logfc_col = "logFC.CN1")
+```
+
+## Step 6: Gene Annotation
+
+### Add Gene Symbols
+
+```{r annotate-genes, eval=FALSE}
+# Add gene symbols to results
+annotated <- add_gene_symbols(filtered, id_type = "auto")
+
+# View annotated results
+head(annotated[, c("gene_id", "gene_symbol", "AdjPValue")])
+```
+
+### Comprehensive Annotation with biomaRt
+
+```{r biomart-annotation, eval=FALSE}
+# Full annotation including gene description
+annotated <- annotate_with_biomart(filtered, genome = "GRCh38")
+```
+
+## Step 7: Correlation Analysis (Optional)
+
+For genes with CNV annotation, calculate direct correlation between
+CNV segment mean and expression:
+
+```{r correlation, eval=FALSE}
+# Prepare data for correlation
+cor_data <- prepare_correlation_data(
+    cnv_annotated,
+    counts,
+    sample_col = "sample",
+    gene_col = "gene_id"
+)
+
+# Calculate correlations
+cor_results <- calculate_cnv_expression_correlation(
+    cor_data,
+    method = "spearman"
+)
+
+# Filter significant correlations
+sig_cors <- filter_significant_correlations(cor_results, p_cutoff = 0.05)
+```
+
+# Results Interpretation
+
+## Understanding the Output
+
+The main results contain:
+
+| Column | Description |
+|--------|-------------|
+| group_name | Gene location (chr:start-end) |
+| logFC.CN0 | Log fold change for homozygous deletion |
+| logFC.CN1 | Log fold change for heterozygous deletion |
+| logFC.CN3 | Log fold change for duplication |
+| logFC.CN4 | Log fold change for high amplification |
+| PValue | Raw p-value |
+| AdjPValue | Benjamini-Hochberg adjusted p-value |
+
+## Biological Interpretation
+
+- **Positive logFC with amplification (CN3/CN4)**: Gene expression increases
+  with copy number gain - potential oncogene
+- **Negative logFC with deletion (CN0/CN1)**: Gene expression decreases with
+  copy number loss - potential tumor suppressor
+- **Concordant CNV-expression**: CNV dosage effect likely functional
+
+# Export Results
+
+```{r export, eval=FALSE}
+# Export filtered results to TSV
+export_results(annotated, "results/cnv_expression_filtered.tsv")
+
+# Export all results
+export_results(results, "results/cnv_expression_all.tsv")
+
+# Generate report plots
+plots <- generate_report_plots(
+    list(cnv_processed = cnv_processed,
+         results_filtered = filtered),
+    output_dir = "results/plots"
+)
+```
+
+# Session Information
+
+```{r sessioninfo}
+sessionInfo()
+```
+
+# References
+
+1. Da Silva VL, et al. (2020). CNVRanger: association analysis of CNVs
+   with gene expression and quantitative phenotypes. *Bioinformatics*.
+
+2. TCGA Research Network (2013). Genomic and Epigenomic Landscapes of
+   Adult De Novo Acute Myeloid Leukemia. *N Engl J Med*.
+
+3. Goldman MJ, et al. (2020). Visualizing and interpreting cancer genomics
+   data via the Xena platform. *Nature Biotechnology*.

@@ -246,9 +246,8 @@ get_cnvexpression_version <- function() {
 #' @importFrom dplyr %>% filter select mutate group_by summarise case_when n
 #' @importFrom tidyr separate
 #' @importFrom stringr str_replace_all
-#' @importFrom GenomicRanges GRanges makeGRangesListFromDataFrame findOverlaps
-#'   subsetByOverlaps mergeByOverlaps sort
-#' @importFrom IRanges IRanges
+#' @importFrom GenomicRanges GRanges makeGRangesListFromDataFrame findOverlaps sort
+#' @importFrom IRanges IRanges subsetByOverlaps mergeByOverlaps
 #' @importFrom S4Vectors mcols mcols<- queryHits subjectHits isEmpty
 #' @importFrom SummarizedExperiment SummarizedExperiment
 #' @importFrom CNVRanger populationRanges cnvEQTL

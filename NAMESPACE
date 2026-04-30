@@ -46,10 +46,9 @@ export(plot_cnv_per_sample)
 export(generate_report_plots)
 
 # Imports from other packages
-importFrom(GenomicRanges, GRanges, makeGRangesListFromDataFrame, findOverlaps,
-           subsetByOverlaps, mergeByOverlaps, sort)
+importFrom(GenomicRanges, GRanges, makeGRangesListFromDataFrame, findOverlaps, sort)
 importFrom(GenomeInfoDb, "seqlevelsStyle<-")
-importFrom(IRanges, IRanges)
+importFrom(IRanges, IRanges, subsetByOverlaps, mergeByOverlaps)
 importFrom(S4Vectors, mcols, "mcols<-", queryHits, subjectHits, isEmpty)
 importFrom(SummarizedExperiment, SummarizedExperiment)
 importFrom(CNVRanger, populationRanges, cnvEQTL)

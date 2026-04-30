@@ -47,6 +47,7 @@ export(generate_report_plots)
 
 # Imports from other packages
 importFrom(GenomicRanges, GRanges, makeGRangesListFromDataFrame, findOverlaps, sort)
+importFrom(GenomicFeatures, genes)
 importFrom(GenomeInfoDb, "seqlevelsStyle<-")
 importFrom(IRanges, IRanges, subsetByOverlaps, mergeByOverlaps)
 importFrom(S4Vectors, mcols, "mcols<-", queryHits, subjectHits, isEmpty)

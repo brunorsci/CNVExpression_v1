@@ -33,6 +33,7 @@ Depends:
     R (>= 4.4.0)
 Imports:
     GenomicRanges,
+    GenomicFeatures,
     IRanges,
     S4Vectors,
     SummarizedExperiment,

@@ -5,9 +5,10 @@ NULL
 
 #' Create Gene GRanges from Expression Data
 #'
-#' Create a GRanges object for genes based on expression data using biomaRt.
+#' Create a GRanges object for genes based on expression data. Uses biomaRt
+#' when available; falls back to TxDb + org.Hs.eg.db for offline use.
 #'
-#' @param gene_ids Character vector of gene identifiers (e.g., Ensembl IDs)
+#' @param gene_ids Character vector of gene identifiers (Ensembl IDs or symbols)
 #' @param id_type Type of gene ID: "ensembl" (default) or "symbol"
 #' @param genome Reference genome: "GRCh38" (default) or "GRCh37"
 #'
@@ -16,7 +17,7 @@ NULL
 #'
 #' @examples
 #' \dontrun{
-#' genes_gr <- create_gene_granges(rownames(expr_data))
+#' genes_gr <- create_gene_granges(rownames(expr_data), id_type = "symbol")
 #' }
 create_gene_granges <- function(gene_ids,
                                  id_type = c("ensembl", "symbol"),
@@ -25,61 +26,112 @@ create_gene_granges <- function(gene_ids,
     id_type <- match.arg(id_type)
     genome <- match.arg(genome)
 
-    if (!requireNamespace("biomaRt", quietly = TRUE)) {
-        stop("Package 'biomaRt' is required. Install with: ",
-             "BiocManager::install('biomaRt')")
-    }
-
-    # Clean gene IDs (remove version for Ensembl)
     if (id_type == "ensembl") {
         gene_ids_clean <- gsub("\\..*", "", gene_ids)
-        filter_name <- "ensembl_gene_id"
     } else {
         gene_ids_clean <- gene_ids
-        filter_name <- "external_gene_name"
     }
 
-    # Connect to Ensembl
-    if (genome == "GRCh37") {
-        ensembl <- biomaRt::useEnsembl(
-            biomart = "ensembl",
-            dataset = "hsapiens_gene_ensembl",
-            GRCh = 37
-        )
-    } else {
-        ensembl <- biomaRt::useEnsembl(
-            biomart = "ensembl",
-            dataset = "hsapiens_gene_ensembl"
-        )
-    }
-
-    # Get gene information
-    gene_info <- biomaRt::getBM(
-        attributes = c("ensembl_gene_id", "chromosome_name",
-                       "start_position", "end_position", "strand"),
-        filters = filter_name,
-        values = gene_ids_clean,
-        mart = ensembl
-    )
-
-    # Filter to standard chromosomes
     standard_chroms <- c(as.character(1:22), "X", "Y")
-    gene_info <- gene_info[gene_info$chromosome_name %in% standard_chroms, ]
 
-    # Create GRanges object
-    genes_gr <- GenomicRanges::GRanges(
-        seqnames = paste0("chr", gene_info$chromosome_name),
-        ranges = IRanges::IRanges(
-            start = gene_info$start_position,
-            end = gene_info$end_position
-        ),
-        strand = "*",
-        gene_id = gene_info$ensembl_gene_id
-    )
+    # --- biomaRt path ---
+    if (requireNamespace("biomaRt", quietly = TRUE)) {
+        filter_name <- if (id_type == "ensembl") "ensembl_gene_id" else "external_gene_name"
 
-    names(genes_gr) <- genes_gr$gene_id
+        if (genome == "GRCh37") {
+            ensembl <- biomaRt::useEnsembl(
+                biomart = "ensembl",
+                dataset = "hsapiens_gene_ensembl",
+                GRCh = 37
+            )
+        } else {
+            ensembl <- biomaRt::useEnsembl(
+                biomart = "ensembl",
+                dataset = "hsapiens_gene_ensembl"
+            )
+        }
 
-    return(genes_gr)
+        gene_info <- biomaRt::getBM(
+            attributes = c("ensembl_gene_id", "chromosome_name",
+                           "start_position", "end_position", "strand"),
+            filters = filter_name,
+            values = gene_ids_clean,
+            mart = ensembl
+        )
+
+        gene_info <- gene_info[gene_info$chromosome_name %in% standard_chroms, ]
+
+        genes_gr <- GenomicRanges::GRanges(
+            seqnames = paste0("chr", gene_info$chromosome_name),
+            ranges = IRanges::IRanges(
+                start = gene_info$start_position,
+                end = gene_info$end_position
+            ),
+            strand = "*",
+            gene_id = gene_info$ensembl_gene_id
+        )
+        names(genes_gr) <- genes_gr$gene_id
+        return(genes_gr)
+    }
+
+    # --- TxDb fallback (offline) ---
+    message("biomaRt not available; using TxDb as fallback.")
+
+    ucsc_genome <- if (genome == "GRCh38") "hg38" else "hg19"
+
+    if (ucsc_genome == "hg38") {
+        if (!requireNamespace("TxDb.Hsapiens.UCSC.hg38.knownGene", quietly = TRUE))
+            stop("Install biomaRt OR TxDb.Hsapiens.UCSC.hg38.knownGene: ",
+                 "BiocManager::install(c('biomaRt','TxDb.Hsapiens.UCSC.hg38.knownGene','org.Hs.eg.db'))")
+        txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene::TxDb.Hsapiens.UCSC.hg38.knownGene
+    } else {
+        if (!requireNamespace("TxDb.Hsapiens.UCSC.hg19.knownGene", quietly = TRUE))
+            stop("Install biomaRt OR TxDb.Hsapiens.UCSC.hg19.knownGene: ",
+                 "BiocManager::install(c('biomaRt','TxDb.Hsapiens.UCSC.hg19.knownGene','org.Hs.eg.db'))")
+        txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene::TxDb.Hsapiens.UCSC.hg19.knownGene
+    }
+
+    if (!requireNamespace("org.Hs.eg.db", quietly = TRUE))
+        stop("Install org.Hs.eg.db: BiocManager::install('org.Hs.eg.db')")
+
+    if (!requireNamespace("AnnotationDbi", quietly = TRUE))
+        stop("Install AnnotationDbi: BiocManager::install('AnnotationDbi')")
+
+    genes_ref <- GenomicFeatures::genes(txdb)
+
+    entrez_ids <- names(genes_ref)
+
+    if (id_type == "symbol") {
+        sym_map <- AnnotationDbi::mapIds(
+            org.Hs.eg.db::org.Hs.eg.db,
+            keys    = entrez_ids,
+            column  = "SYMBOL",
+            keytype = "ENTREZID",
+            multiVals = "first"
+        )
+        keep <- !is.na(sym_map) & sym_map %in% gene_ids_clean
+        genes_ref <- genes_ref[keep]
+        genes_ref$gene_id <- sym_map[names(genes_ref)]
+    } else {
+        ensembl_map <- AnnotationDbi::mapIds(
+            org.Hs.eg.db::org.Hs.eg.db,
+            keys    = entrez_ids,
+            column  = "ENSEMBL",
+            keytype = "ENTREZID",
+            multiVals = "first"
+        )
+        keep <- !is.na(ensembl_map) & ensembl_map %in% gene_ids_clean
+        genes_ref <- genes_ref[keep]
+        genes_ref$gene_id <- ensembl_map[names(genes_ref)]
+    }
+
+    # Keep only standard chromosomes (TxDb uses "chr" prefix already)
+    seqnames_chr <- as.character(GenomicRanges::seqnames(genes_ref))
+    keep_chr <- seqnames_chr %in% paste0("chr", standard_chroms)
+    genes_ref <- genes_ref[keep_chr]
+
+    names(genes_ref) <- genes_ref$gene_id
+    return(genes_ref)
 }
 
 #' Create SummarizedExperiment from Expression Data
@@ -343,10 +395,13 @@ cnv_expression_pipeline <- function(cnv_data,
                                      segment_mean_col = "segment_mean",
                                      sample_col = "sample",
                                      genome = "GRCh38",
+                                     id_type = c("ensembl", "symbol"),
                                      window = "1Mbp",
                                      logfc_cutoff = 1,
                                      pvalue_cutoff = 0.05,
                                      verbose = TRUE) {
+
+    id_type <- match.arg(id_type)
 
     if (verbose) message("Step 1/6: Preparing CNV data...")
     cnv_processed <- prepare_cnv_data(cnv_data, segment_mean_col)
@@ -364,7 +419,7 @@ cnv_expression_pipeline <- function(cnv_data,
     cnvrs <- calculate_population_ranges(cnv_grl, verbose = verbose)
 
     if (verbose) message("Step 4/6: Creating gene GRanges...")
-    genes_gr <- create_gene_granges(rownames(expression_data), genome = genome)
+    genes_gr <- create_gene_granges(rownames(expression_data), id_type = id_type, genome = genome)
 
     if (verbose) message("Step 5/6: Creating SummarizedExperiment...")
     rse <- create_expression_se(expression_data, genes_gr)

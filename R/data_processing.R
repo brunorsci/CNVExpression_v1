@@ -3,23 +3,51 @@
 #' @name data_processing
 NULL
 
-#' Load CNV Data from File
+#' Load CNV Segment Data from File
 #'
-#' Load Copy Number Variation data from a tab-delimited file (e.g., from TCGA/Xena).
+#' Load Copy Number Variation segment data from a tab-delimited file.
+#' The file must be in segment format: one row per genomic segment, with
+#' columns for sample ID, chromosome, start/end positions, and segment mean
+#' (log2 ratio). Column names can be customised to match any source
+#' (TCGA/GDC, UCSC Xena, GATK, DNAcopy, Sequenza, etc.).
 #'
-#' @param file Path to the CNV file (can be gzipped)
-#' @param sample_col Name of the column containing sample identifiers
-#' @param chrom_col Name of the column containing chromosome information
-#' @param start_col Name of the column containing start position
-#' @param end_col Name of the column containing end position
-#' @param value_col Name of the column containing segment mean values
+#' @param file Path to the CNV segment file (plain text or gzipped).
+#' @param sample_col Name of the column containing sample identifiers.
+#'   Default \code{"sample"}.
+#' @param chrom_col Name of the column containing chromosome labels
+#'   (e.g. \code{"chr1"} or \code{"1"} are both accepted downstream).
+#'   Default \code{"Chrom"}.
+#' @param start_col Name of the column with segment start coordinates (1-based).
+#'   Default \code{"Start"}.
+#' @param end_col Name of the column with segment end coordinates (inclusive).
+#'   Default \code{"End"}.
+#' @param value_col Name of the column with segment mean log2-ratio values.
+#'   Default \code{"value"}.
 #'
-#' @return A data.frame with standardized column names
+#' @return A data.frame with five standardised columns:
+#'   \code{sample}, \code{chrom}, \code{start}, \code{end}, \code{segment_mean}.
 #' @export
 #'
 #' @examples
 #' \dontrun{
-#' cnv_data <- load_cnv_data("TCGA-LAML.masked_cnv_DNAcopy.tsv.gz")
+#' # UCSC Xena / DNAcopy format (chr, start, end, value)
+#' cnv <- load_cnv_data("SNP6_genomicSegment.tsv.gz",
+#'                      chrom_col = "chr", start_col = "start", end_col = "end")
+#'
+#' # GATK ModelSegments format (CONTIG, START, END, LOG2_COPY_RATIO_POSTERIOR_50)
+#' cnv <- load_cnv_data("tumor.cr.seg",
+#'                      chrom_col = "CONTIG",
+#'                      start_col = "START",
+#'                      end_col   = "END",
+#'                      value_col = "LOG2_COPY_RATIO_POSTERIOR_50")
+#'
+#' # Sequenza / custom format
+#' cnv <- load_cnv_data("sequenza_segments.txt",
+#'                      sample_col = "ID",
+#'                      chrom_col  = "chromosome",
+#'                      start_col  = "start.pos",
+#'                      end_col    = "end.pos",
+#'                      value_col  = "CNt")
 #' }
 load_cnv_data <- function(file,
                           sample_col = "sample",
@@ -58,24 +86,44 @@ load_cnv_data <- function(file,
 
 #' Load Expression Data from File
 #'
-#' Load RNA-seq count data from a tab-delimited file.
+#' Load RNA-seq expression data from a tab-delimited file. The file must have
+#' genes as rows and samples as columns, with one leading column containing
+#' gene identifiers (Ensembl IDs, gene symbols, or any other identifier).
 #'
-#' @param file Path to the expression file (can be gzipped)
-#' @param gene_col Name of the column containing gene identifiers (e.g., Ensembl ID)
-#' @param remove_par_y Logical, whether to remove PAR_Y genes
-#' @param remove_version Logical, whether to remove version suffix from gene IDs
+#' @param file Path to the expression file (plain text or gzipped).
+#' @param gene_col Name of the column containing gene identifiers.
+#'   Default \code{"Ensembl_ID"}. For UCSC Xena HiSeqV2 files use
+#'   \code{"sample"}; for GDC STAR counts use \code{"Ensembl_ID"}.
+#' @param remove_par_y Logical. Remove PAR_Y-suffixed Ensembl IDs (GDC-specific
+#'   artefact). Set \code{FALSE} when gene IDs are not Ensembl or data do not
+#'   come from GDC. Default \code{FALSE}.
+#' @param remove_version Logical. Strip the version suffix from Ensembl IDs
+#'   (e.g. \code{ENSG00000141510.18} → \code{ENSG00000141510}). Set
+#'   \code{FALSE} when using gene symbols or non-versioned IDs. Default
+#'   \code{FALSE}.
 #'
-#' @return A data.frame with genes as rows and samples as columns
+#' @return A data.frame with gene identifiers as row names and samples as
+#'   columns.
 #' @export
 #'
 #' @examples
 #' \dontrun{
-#' expr_data <- load_expression_data("TCGA-LAML.star_counts.tsv.gz")
+#' # GDC STAR counts (versioned Ensembl IDs, PAR_Y entries present)
+#' expr <- load_expression_data("TCGA-LAML.star_counts.tsv.gz",
+#'                              gene_col       = "Ensembl_ID",
+#'                              remove_par_y   = TRUE,
+#'                              remove_version = TRUE)
+#'
+#' # UCSC Xena HiSeqV2 (gene symbols, no version suffix)
+#' expr <- load_expression_data("HiSeqV2.gz", gene_col = "sample")
+#'
+#' # Generic count matrix (first column = gene symbol)
+#' expr <- load_expression_data("counts.tsv", gene_col = "GeneSymbol")
 #' }
 load_expression_data <- function(file,
                                   gene_col = "Ensembl_ID",
-                                  remove_par_y = TRUE,
-                                  remove_version = TRUE) {
+                                  remove_par_y = FALSE,
+                                  remove_version = FALSE) {
 
     if (!file.exists(file)) {
         stop("File not found: ", file)
@@ -109,37 +157,43 @@ load_expression_data <- function(file,
 
 #' Standardize Sample Identifiers
 #'
-#' Standardize TCGA sample identifiers by replacing hyphens with underscores
-#' and optionally truncating to a specific number of parts.
+#' Normalize sample identifiers so that CNV and expression datasets can be
+#' matched regardless of how the identifiers were originally formatted.
+#' Both hyphens (\code{-}) and dots (\code{.}) are treated as separators,
+#' which handles the common case where R silently converts \code{TCGA-AB-1234-01}
+#' to \code{TCGA.AB.1234.01} in data frame column names.
 #'
-#' @param samples Character vector of sample identifiers
-#' @param sep Separator character (default: "-")
-#' @param n_parts Number of parts to keep (default: 4, e.g., "TCGA-AB-1234-01")
-#' @param output_sep Separator for output (default: "_")
+#' @param samples Character vector of sample identifiers.
+#' @param n_parts Number of identifier parts to keep. Default \code{4}
+#'   (e.g. keeps \code{TCGA-AB-1234-01} from a longer barcode). Set
+#'   \code{Inf} to keep the full identifier.
+#' @param output_sep Separator used in the output. Default \code{"_"}.
 #'
-#' @return Character vector with standardized sample identifiers
+#' @return Character vector of standardized sample identifiers.
 #' @export
 #'
 #' @examples
-#' samples <- c("TCGA-AB-1234-01A-11R-A12B-07", "TCGA-AB-5678-01A-11R-A12B-07")
-#' standardize_sample_ids(samples)
+#' # TCGA barcodes with hyphens
+#' standardize_sample_ids(c("TCGA-AB-1234-01A-11R-A12B-07"))
+#' # R-mangled dots treated identically
+#' standardize_sample_ids(c("TCGA.AB.1234.01"))
+#' # Non-TCGA IDs are returned unchanged (no hyphen/dot)
+#' standardize_sample_ids(c("Sample1", "Sample2"))
 standardize_sample_ids <- function(samples,
-                                    sep = "-",
                                     n_parts = 4,
                                     output_sep = "_") {
 
     standardized <- vapply(samples, function(x) {
-        parts <- unlist(strsplit(x, sep, fixed = TRUE))
-        if (length(parts) >= n_parts) {
+        # Split on either hyphen or dot
+        parts <- unlist(strsplit(x, "[-.]"))
+        if (length(parts) >= n_parts && is.finite(n_parts)) {
             paste(parts[seq_len(n_parts)], collapse = output_sep)
+        } else if (length(parts) > 1) {
+            paste(parts, collapse = output_sep)
         } else {
-            gsub(sep, output_sep, x, fixed = TRUE)
+            x  # no separator found — return as-is
         }
     }, character(1), USE.NAMES = FALSE)
-
-    # Clean up common suffixes
-    standardized <- gsub("_03A$", "_03", standardized)
-    standardized <- gsub("_11A$", "_11", standardized)
 
     return(standardized)
 }

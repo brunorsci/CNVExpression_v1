@@ -218,11 +218,10 @@ run_cnv_expression_analysis <- function(cnvrs,
     # Run cnvEQTL analysis
     results <- CNVRanger::cnvEQTL(
         cnvrs = cnvrs,
-        grl = cnv_grl,
-        rse = rse,
+        calls = cnv_grl,
+        rcounts = rse,
         window = window,
         min.samples = min_samples,
-        min.state.freq = min_state_freq,
         filter.by.expr = filter_by_expr,
         verbose = verbose
     )
